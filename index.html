@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Подушка Купертино: раздай бабло на науку</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #0b0f1a;
+    color: #e8ecf5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .wrap {
+    width: 520px;
+    max-width: 96vw;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 0 20px;
+  }
+  h1 { font-size: 18px; margin: 4px 0 0; text-align: center; }
+  .sub { font-size: 13px; opacity: .75; text-align: center; margin: 0; }
+  .hud {
+    display: flex; justify-content: space-between;
+    font-size: 14px; background: #141a2b; border-radius: 10px; padding: 8px 12px;
+  }
+  canvas {
+    width: 100%;
+    display: block;
+    border-radius: 14px;
+    background: #10162a;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #msg {
+    min-height: 40px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: #141a2b;
+    font-size: 14px;
+    text-align: center;
+    transition: background .2s;
+  }
+  #msg.bad { background: #5a1620; animation: shake .35s; }
+  #msg.good { background: #164a2c; }
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    20% { transform: translateX(-8px); }
+    40% { transform: translateX(8px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(5px); }
+  }
+  .btns { display: flex; gap: 8px; }
+  .btns button {
+    flex: 1; padding: 12px 6px; font-size: 15px; border: none; border-radius: 10px;
+    background: #2a3a66; color: #fff; cursor: pointer;
+  }
+  .btns button:active { background: #3d55a0; }
+  .help { font-size: 12px; opacity: .7; line-height: 1.45; }
+  kbd { background: #222b45; border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Подушка Купертино</h1>
+  <p class="sub">Пока Кук держит бабло под подушкой и выкупает акции — раздай его на развитие человечества.</p>
+  <div class="hud">
+    <span id="hudCash">Под подушкой: $0 млрд</span>
+    <span id="hudLost">Ушло в байбэк: $0 млрд</span>
+  </div>
+  <canvas id="cv"></canvas>
+  <div id="msg">Перетащи мешок с деньгами на проект. Или тапни мешок, потом проект.</div>
+  <div class="btns">
+    <button id="btnFund">Финансировать выбранный</button>
+    <button id="btnRestart">Заново</button>
+  </div>
+  <div class="help">
+    <b>Тач/мышь:</b> тащи мешок $10 млрд на проект, либо тап по мешку → тап по проекту. Тап по проекту без мешка — выбрать его.<br>
+    <b>Клавиатура:</b> <kbd>↑</kbd>/<kbd>↓</kbd> — выбор проекта, <kbd>Enter</kbd>/<kbd>Пробел</kbd> — отправить мешок, <kbd>R</kbd> — заново.<br>
+    Каждые несколько секунд Кук «выкупает акции» и мешок сгорает. Успей профинансировать всё!
+  </div>
+</div>
+
+<script>
+// ===================== ДАННЫЕ =====================
+const W = 400, H = 600;           // логические единицы холста
+const BAG = 10;                   // млрд $ в одном мешке
+const START_BAGS = 18;
+const BUYBACK_MS = 4500;
+
+const PROJECTS_DEF = [
+  { name: "Зонд к Европе",            note: "ищем жизнь в подлёдном океане", cost: 2, color: "#4fc3f7" },
+  { name: "Километровый телескоп",    note: "экзопланеты как на ладони",     cost: 5, color: "#ba68c8" },
+  { name: "Радиоастрономия",          note: "микроволны и реликтовый фон",   cost: 2, color: "#ffb74d" },
+  { name: "Фундаментальная физика",   note: "бери не хочу",                  cost: 3, color: "#81c784" },
+  { name: "Свой ИИ",                  note: "догнать гонку, которую проиграли", cost: 3, color: "#f06292" }
+];
+
+const PILLOW = { x: 15, y: 15, w: 370, h: 170 };
+const PROJ_Y0 = 210, PROJ_H = 66, PROJ_GAP = 10;
+
+const state = {
+  bags: 0,
+  lost: 0,
+  projects: [],
+  sel: 0,
+  picked: false,
+  drag: null,        // {x,y,sx,sy,moved,id}
+  shake: null,       // {kind:'proj'|'pillow', i, t}
+  buybackAt: 0,
+  over: false,
+  won: false,
+  lastTime: 0,
+  scale: 1,
+  flash: []          // {i,t}
+};
+
+// ===================== ПРАВИЛА =====================
+function resetGame() {
+  state.bags = START_BAGS;
+  state.lost = 0;
+  state.projects = PROJECTS_DEF.map(p => ({ ...p, got: 0 }));
+  state.sel = 0;
+  state.picked = false;
+  state.drag = null;
+  state.shake = null;
+  state.over = false;
+  state.won = false;
+  state.flash = [];
+  state.buybackAt = performance.now() + BUYBACK_MS;
+  say("Перетащи мешок с деньгами на проект. Или тапни мешок, потом проект.", "");
+  updateHud();
+}
+
+function remainingNeed() {
+  return state.projects.reduce((s, p) => s + (p.cost - p.got), 0);
+}
+
+function invalid(text, kind, i) {
+  state.shake = { kind, i, t: performance.now() };
+  say("Так нельзя: " + text, "bad");
+}
+
+function fund(i) {
+  if (state.over) { invalid("игра окончена, жми «Заново».", "pillow", 0); return; }
+  const p = state.projects[i];
+  if (!p) { invalid("сюда деньги не кладут.", "pillow", 0); return; }
+  if (state.bags <= 0) { invalid("под подушкой пусто.", "pillow", 0); return; }
+  if (p.got >= p.cost) { invalid("«" + p.name + "» уже профинансирован.", "proj", i); return; }
+  state.bags--;
+  p.got++;
+  state.picked = false;
+  state.flash.push({ i, t: performance.now() });
+  if (p.got >= p.cost) say("✅ «" + p.name + "» полностью профинансирован! " + p.note + ".", "good");
+  else say("+$" + BAG + " млрд на «" + p.name + "» (" + p.got + "/" + p.cost + ")", "good");
+  checkEnd();
+  updateHud();
+}
+
+function buyback() {
+  if (state.bags <= 0) return;
+  state.bags--;
+  state.lost++;
+  state.picked = state.picked && state.bags > 0;
+  state.shake = { kind: "pillow", i: 0, t: performance.now() };
+  say("💸 Кук выкупил акции: −$" + BAG + " млрд в никуда.", "bad");
+  checkEnd();
+  updateHud();
+}
+
+function checkEnd() {
+  if (remainingNeed() === 0) {
+    state.over = true; state.won = true;
+    say("🚀 Всё профинансировано! Джобс бы одобрил. В байбэк ушло $" + state.lost * BAG + " млрд.", "good");
+  } else if (state.bags < remainingNeed()) {
+    state.over = true; state.won = false;
+    say("🛏️ Денег не хватит. Бабло осталось под подушкой. Типичное решение. Жми «Заново».", "bad");
+  }
+}
+
+// ===================== ОТРИСОВКА =====================
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const msgEl = document.getElementById("msg");
+
+function say(text, cls) {
+  msgEl.textContent = text;
+  msgEl.className = "";
+  void msgEl.offsetWidth; // перезапуск анимации
+  if (cls) msgEl.className = cls;
+}
+
+function updateHud() {
+  document.getElementById("hudCash").textContent = "Под подушкой: $" + state.bags * BAG + " млрд";
+  document.getElementById("hudLost").textContent = "Ушло в байбэк: $" + state.lost * BAG + " млрд";
+}
+
+function resize() {
+  const cssW = cv.clientWidth || 400;
+  const dpr = window.devicePixelRatio || 1;
+  cv.style.height = (cssW * H / W) + "px";
+  cv.width = Math.round(cssW * dpr);
+  cv.height = Math.round(cssW * H / W * dpr);
+  state.scale = cv.width / W;
+}
+
+function bagPos(k) {
+  const perRow = 6, bw = 52, bh = 44;
+  const col = k % perRow, row = Math.floor(k / perRow);
+  return { x: PILLOW.x + 20 + col * 57, y: PILLOW.y + 34 + row * 44, w: bw, h: bh };
+}
+
+function projRect(i) {
+  return { x: 15, y: PROJ_Y0 + i * (PROJ_H + PROJ_GAP), w: 370, h: PROJ_H };
+}
+
+function shakeOffset(kind, i, now) {
+  const s = state.shake;
+  if (!s || s.kind !== kind || s.i !== i) return 0;
+  const dt = now - s.t;
+  if (dt > 400) return 0;
+  return Math.sin(dt / 25) * 7 * (1 - dt / 400);
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawBag(x, y, w, h, highlight) {
+  ctx.fillStyle = highlight ? "#ffe082" : "#c9a227";
+  roundRect(x, y + 8, w, h - 8, 10); ctx.fill();
+  ctx.fillStyle = highlight ? "#fff3c4" : "#e0bc45";
+  roundRect(x + w * 0.3, y, w * 0.4, 12, 4); ctx.fill();
+  ctx.fillStyle = "#3b2f05";
+  ctx.font = "bold 16px sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("$10B", x + w / 2, y + h / 2 + 5);
+}
+
+function draw(now) {
+  ctx.setTransform(state.scale, 0, 0, state.scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // подушка
+  const px = PILLOW.x + shakeOffset("pillow", 0, now);
+  ctx.fillStyle = "#e6e9f2";
+  roundRect(px, PILLOW.y, PILLOW.w, PILLOW.h, 30); ctx.fill();
+  ctx.fillStyle = "#c7ccda";
+  roundRect(px + 8, PILLOW.y + 8, PILLOW.w - 16, PILLOW.h - 16, 24); ctx.fill();
+  ctx.fillStyle = "#4a5270";
+  ctx.font = "bold 13px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("ПОДУШКА ТИМА КУКА", px + 22, PILLOW.y + 14);
+
+  // таймер байбэка
+  if (!state.over) {
+    const left = Math.max(0, state.buybackAt - now) / BUYBACK_MS;
+    ctx.fillStyle = "#8a1f2c";
+    ctx.fillRect(px + 200, PILLOW.y + 17, 150 * left, 8);
+    ctx.strokeStyle = "#4a5270"; ctx.lineWidth = 1;
+    ctx.strokeRect(px + 200, PILLOW.y + 17, 150, 8);
+  }
+
+  const dragging = state.drag && state.drag.moved;
+  const visibleBags = state.bags - (dragging ? 1 : 0);
+  for (let k = 0; k < visibleBags; k++) {
+    const b = bagPos(k);
+    drawBag(b.x + (px - PILLOW.x), b.y, b.w, b.h, state.picked && k === visibleBags - 1);
+  }
+  if (state.bags === 0) {
+    ctx.fillStyle = "#4a5270"; ctx.font = "15px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("пусто", px + PILLOW.w / 2, PILLOW.y + 90);
+  }
+
+  // проекты
+  let hover = -1;
+  if (dragging) hover = projAt(state.drag.x, state.drag.y);
+  state.projects.forEach((p, i) => {
+    const r = projRect(i);
+    const x = r.x + shakeOffset("proj", i, now);
+    const done = p.got >= p.cost;
+    ctx.fillStyle = done ? "#17331f" : (hover === i ? "#24315a" : "#182038");
+    roundRect(x, r.y, r.w, r.h, 12); ctx.fill();
+    // вспышка
+    const fl = state.flash.find(f => f.i === i && now - f.t < 500);
+    if (fl) {
+      ctx.fillStyle = "rgba(255,224,130," + (0.4 * (1 - (now - fl.t) / 500)) + ")";
+      roundRect(x, r.y, r.w, r.h, 12); ctx.fill();
+    }
+    if (i === state.sel) {
+      ctx.strokeStyle = "#ffe082"; ctx.lineWidth = 3;
+      roundRect(x + 1.5, r.y + 1.5, r.w - 3, r.h - 3, 11); ctx.stroke();
+    }
+    ctx.fillStyle = p.color;
+    ctx.fillRect(x + 10, r.y + 12, 6, r.h - 24);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.font = "bold 15px sans-serif";
+    ctx.fillText((done ? "✓ " : "") + p.name, x + 26, r.y + 9);
+    ctx.fillStyle = "#9aa6c8"; ctx.font = "12px sans-serif";
+    ctx.fillText(p.note, x + 26, r.y + 28);
+    // прогресс
+    const bx = x + 26, by = r.y + 46, bw = r.w - 110, bh = 10;
+    ctx.fillStyle = "#0b0f1a"; ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = p.color; ctx.fillRect(bx, by, bw * p.got / p.cost, bh);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("$" + p.got * BAG + "/" + p.cost * BAG + " млрд", x + r.w - 10, r.y + 42);
+  });
+
+  // перетаскиваемый мешок
+  if (dragging) drawBag(state.drag.x - 26, state.drag.y - 22, 52, 44, true);
+
+  // итог
+  if (state.over) {
+    ctx.fillStyle = "rgba(11,15,26,0.6)";
+    ctx.fillRect(0, PILLOW.y + PILLOW.h / 2 - 22, W, 44);
+    ctx.fillStyle = state.won ? "#a5d6a7" : "#ef9a9a";
+    ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(state.won ? "Человечество развито! 🚀" : "Бабло осталось под подушкой", W / 2, PILLOW.y + PILLOW.h / 2);
+  }
+}
+
+// ===================== ВВОД =====================
+function toLogical(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+}
+function inRect(pt, r) { return pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h; }
+function projAt(x, y) {
+  for (let i = 0; i < state.projects.length; i++) if (inRect({ x, y }, projRect(i))) return i;
+  return -1;
+}
+function onPillow(pt) { return inRect(pt, PILLOW); }
+
+cv.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  const pt = toLogical(e);
+  if (onPillow(pt)) {
+    if (state.over) { invalid("игра окончена, жми «Заново».", "pillow", 0); return; }
+    if (state.bags <= 0) { invalid("под подушкой пусто.", "pillow", 0); return; }
+    cv.setPointerCapture(e.pointerId);
+    state.drag = { x: pt.x, y: pt.y, sx: pt.x, sy: pt.y, moved: false, id: e.pointerId };
+    return;
+  }
+  const i = projAt(pt.x, pt.y);
+  if (i >= 0) {
+    state.sel = i;
+    if (state.picked) fund(i);
+    return;
+  }
+  if (state.picked) { state.picked = false; say("Мешок положен обратно под подушку.", ""); }
+});
+
+cv.addEventListener("pointermove", e => {
+  if (!state.drag || state.drag.id !== e.pointerId) return;
+  const pt = toLogical(e);
+  state.drag.x = pt.x; state.drag.y = pt.y;
+  if (Math.hypot(pt.x - state.drag.sx, pt.y - state.drag.sy) > 8) state.drag.moved = true;
+});
+
+function endDrag(e, cancelled) {
+  if (!state.drag || state.drag.id !== e.pointerId) return;
+  const d = state.drag;
+  state.drag = null;
+  if (cancelled) return;
+  if (!d.moved) {
+    state.picked = !state.picked;
+    say(state.picked ? "Мешок в руке. Тапни проект, куда отправить $10 млрд." : "Мешок положен обратно.", "");
+    return;
+  }
+  const i = projAt(d.x, d.y);
+  if (i >= 0) { state.sel = i; fund(i); }
+  else if (onPillow(d)) say("Мешок вернулся под подушку. Так делает Кук, не надо так.", "");
+  else invalid("брось мешок прямо на проект.", "pillow", 0);
+}
+cv.addEventListener("pointerup", e => endDrag(e, false));
+cv.addEventListener("pointercancel", e => endDrag(e, true));
+
+window.addEventListener("keydown", e => {
+  const k = e.key;
+  if (k === "ArrowUp") { state.sel = (state.sel + state.projects.length - 1) % state.projects.length; e.preventDefault(); }
+  else if (k === "ArrowDown") { state.sel = (state.sel + 1) % state.projects.length; e.preventDefault(); }
+  else if (k === "Enter" || k === " ") { fund(state.sel); e.preventDefault(); }
+  else if (k === "r" || k === "R" || k === "к" || k === "К") resetGame();
+  else if (/^[1-5]$/.test(k)) state.sel = parseInt(k, 10) - 1;
+});
+
+document.getElementById("btnFund").addEventListener("click", () => fund(state.sel));
+document.getElementById("btnRestart").addEventListener("click", resetGame);
+window.addEventListener("resize", resize);
+
+// ===================== ЗАПУСК =====================
+function loop(now) {
+  if (!state.over && now >= state.buybackAt) {
+    buyback();
+    state.buybackAt = now + BUYBACK_MS;
+  }
+  state.flash = state.flash.filter(f => now - f.t < 500);
+  draw(now);
+  requestAnimationFrame(loop);
+}
+
+resize();
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
